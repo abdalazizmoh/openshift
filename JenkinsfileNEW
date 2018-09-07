@@ -1,0 +1,86 @@
+openshift.withCluster() {
+ openshift.withCredentials('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJjaWNkLXBpcGxpbmUiLCJrdWJlcm5ldGVzLmlvL3NlcnZpY2VhY2NvdW50L3NlY3JldC5uYW1lIjoicGlwbGluZS10b2tlbi1iNXFrbiIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50Lm5hbWUiOiJwaXBsaW5lIiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9zZXJ2aWNlLWFjY291bnQudWlkIjoiZWJlY2E1OGQtYjIwNy0xMWU4LTgyNzctNTI1NDAwYmIxNDdjIiwic3ViIjoic3lzdGVtOnNlcnZpY2VhY2NvdW50OmNpY2QtcGlwbGluZTpwaXBsaW5lIn0.mBHffnqRZCSSowemYwhbBATXojGXaiJgru_BZFtJhkaKQGFShhcHHkqI905Luaze5sWOWiblABQmx0iub9WtFTPBwSHAWCgESdlsOC7YX3-L7FG84rQ4-qe3cYhXrAklYR9hNfiUvO4sRgJUcCWc3gO6TwPZecx6AVPc1lDO48zFv_Xj44VOX0OY1vrtAaYB8I-iXrdOhW0v1e8DmLjaG-F0C8vjCSWyDK-S1O_j-Z4NXYR4R09ELclYmYALvXLss_gqJy2EVwSeM08eh8ecpp2lIqifQBSK5SizCUPHOX8cumFc7rkAtAMAD6mab5qhSBXFqgsKTzZvTcnM5jVs-g') {
+  def PROJECT_NAME = "new-project"
+  def cm
+
+
+  openshift.withProject(PROJECT_NAME) {
+
+   echo "Hello from project ${openshift.project()} in cluster ${openshift.cluster()}"
+   
+        stage('Checkout') {
+
+      // Get some code from a GitHub repository
+      git branch: "master", url: cm.data['https://github.com/zizohere/openshift.git']
+     }
+
+node("php") {
+    stage('Composer Install') {
+        sh 'composer install'
+    }
+
+    stage("PHPLint") {
+        sh 'find app -name "*.php" -print0 | xargs -0 -n1 php -l'
+    }
+
+    stage("PHPUnit") {
+        sh 'vendor/phpunit/phpunit/phpunit --bootstrap build/bootstrap.php --configuration phpunit-coverage.xml'
+    }
+
+    stage("Publish Coverage") {
+        publishHTML (target: [
+                allowMissing: false,
+                alwaysLinkToLastBuild: false,
+                keepAll: true,
+                reportDir: 'build/coverage',
+                reportFiles: 'index.html',
+                reportName: "Coverage Report"
+
+        ])
+    }
+
+    stage("Publish Clover") {
+        step([$class: 'CloverPublisher', cloverReportDir: 'build/logs', cloverReportFileName: 'clover.xml'])
+    }
+
+    stage('Checkstyle Report') {
+        sh 'vendor/bin/phpcs --report=checkstyle --report-file=build/logs/checkstyle.xml --standard=phpcs.xml --extensions=php,inc --ignore=autoload.php --ignore=vendor/ app || exit 0'
+        checkstyle pattern: 'build/logs/checkstyle.xml'
+    }
+
+    stage('Mess Detection Report') {
+        sh 'vendor/bin/phpmd app xml phpmd.xml --reportfile build/logs/pmd.xml --exclude vendor/ --exclude autoload.php || exit 0'
+        pmd canRunOnFailed: true, pattern: 'build/logs/pmd.xml'
+    }
+
+    stage('CPD Report') {
+        sh 'phpcpd --log-pmd build/logs/pmd-cpd.xml --exclude vendor app || exit 0' /* should be vendor/bin/phpcpd but... conflicts... */
+        dry canRunOnFailed: true, pattern: 'build/logs/pmd-cpd.xml'
+    }
+
+    stage('Lines of Code') {
+        sh 'vendor/bin/phploc --count-tests --exclude vendor/ --log-csv build/logs/phploc.csv --log-xml build/logs/phploc.xml app'
+    }
+
+    stage('Software metrics') {
+        sh 'vendor/bin/pdepend --jdepend-xml=build/logs/jdepend.xml --jdepend-chart=build/pdepend/dependencies.svg --overview-pyramid=build/pdepend/overview-pyramid.svg --ignore=vendor app'
+    }
+
+    stage('Generate documentation') {
+        sh 'vendor/bin/phpdox -f phpdox.xml'
+    }
+    stage('Publish Documentation') {
+        publishHTML (target: [
+                allowMissing: false,
+                alwaysLinkToLastBuild: false,
+                keepAll: true,
+                reportDir: 'build/phpdox/html',
+                reportFiles: 'index.html',
+                reportName: "PHPDox Documentation"
+
+        ])
+    }
+  }
+  }
+ }
+}
